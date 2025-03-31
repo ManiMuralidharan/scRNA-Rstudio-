@@ -1,0 +1,132 @@
+# ------------------------------------------------
+# Load Required Libraries
+# ------------------------------------------------
+required_libraries <- c("Seurat", "ggplot2", "dplyr", "SingleR", "celldex")
+
+for (lib in required_libraries) {
+  if (!requireNamespace(lib, quietly = TRUE)) {
+    stop(paste("🚨 Error: Required library", lib, "is not installed. Please install it before proceeding."))
+  }
+  library(lib, character.only = TRUE)
+}
+
+# ------------------------------------------------
+# Set a random seed for reproducibility
+# ------------------------------------------------
+set.seed(123)
+
+# ------------------------------------------------
+# Set the data directory & clustering resolution
+# ------------------------------------------------
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) {
+  message("⚠️ No command-line argument provided! Using manually set data directory...")
+  message("Usage: Rscript script.R <data_directory> [cluster_resolution] [min_pct] [logfc_threshold]")
+  
+  # --- MANUAL SETTINGS (For RStudio Testing) ---
+  data_dir <- "C:/Users/mmani3/Desktop/data ScRNA"
+  cluster_resolution <- 0.5
+  min_pct <- 0.25
+  logfc_threshold <- 0.25
+} else {
+  # --- COMMAND-LINE ARGUMENTS (For Production Use) ---
+  data_dir <- args[1]
+  cluster_resolution <- ifelse(length(args) >= 2, as.numeric(args[2]), 0.5)
+  min_pct <- ifelse(length(args) >= 3, as.numeric(args[3]), 0.25)
+  logfc_threshold <- ifelse(length(args) >= 4, as.numeric(args[4]), 0.25)
+}
+
+# Print selected parameters
+message("📂 Using Data Directory: ", data_dir)
+message("📌 Clustering Resolution: ", cluster_resolution)
+message("🔬 min_pct for Markers: ", min_pct)
+message("📊 logFC Threshold: ", logfc_threshold)
+
+# ------------------------------------------------
+# Verify directories and required files exist
+# ------------------------------------------------
+required_files <- c("barcodes.tsv", "features.tsv", "matrix.mtx") 
+sample_dirs <- c("BP_iso", "BP_PD_1", "BS_iso", "BS_PD_1")
+
+for (dir in sample_dirs) {
+  full_path <- file.path(data_dir, dir)
+  if (!dir.exists(full_path)) {
+    stop(paste("🚨 Error: Directory does not exist:", full_path))
+  }
+  for (file in required_files) {
+    file_path <- file.path(full_path, file)
+    if (!file.exists(file_path) && !file.exists(paste0(file_path, ".gz"))) {
+      stop(paste("🚨 Error: File", file, "or", paste0(file, ".gz") ,"not found in directory:", full_path))
+    }
+  }
+}
+message("✅ All required directories and files exist.")
+
+# ------------------------------------------------
+# Load data and create Seurat objects (with counts check)
+# ------------------------------------------------
+seurat_objects <- list()
+mt_pattern <- "^MT-" # Adjust if needed
+rb_pattern <- "^(RPS|RPL)" 
+
+# Store cell and gene counts in a dataframe for easy visualization
+count_summary <- data.frame(Sample = character(), Genes = numeric(), Cells = numeric(), stringsAsFactors = FALSE)
+
+for (dir in sample_dirs) {
+  start_time_sample <- Sys.time()
+  message("📥 Loading sample: ", dir, " (Started at: ", format(start_time_sample), ")")
+  
+  full_path <- file.path(data_dir, dir)
+  message("📂 Data Directory: ", full_path)
+  
+  # Load 10X data (Seurat automatically detects gzipped files)
+  data <- tryCatch({
+    Read10X(data.dir = full_path)
+  }, error = function(e) {
+    stop(paste("🚨 Error: Could not read data from", full_path, ":", e$message))
+  })
+  
+  # Ensure data is not empty before proceeding
+  if (ncol(data) == 0 || nrow(data) == 0) {
+    stop(paste("🚨 Error: No cells or genes found in dataset", dir, "! Check input files."))
+  }
+  
+  # Count number of cells and genes before processing
+  num_cells <- ncol(data)
+  num_genes <- nrow(data)
+  
+  # Append counts to summary table
+  count_summary <- rbind(count_summary, data.frame(Sample = dir, Genes = num_genes, Cells = num_cells))
+
+  message("✅ Sample ", dir, " contains ", num_genes, " genes and ", num_cells, " cells.")
+  
+  # Stop execution if data is too small
+  if (num_cells < 10) {
+    stop(paste("🚨 Error: Sample", dir, "has too few cells! Check the data."))
+  }
+  
+  # Create Seurat object
+  seurat_objects[[dir]] <- CreateSeuratObject(counts = data, project = dir)
+  
+  # Compute mitochondrial and ribosomal percentage
+  seurat_objects[[dir]][["percent.mt"]] <- PercentageFeatureSet(seurat_objects[[dir]], pattern = mt_pattern)
+  seurat_objects[[dir]][["percent.rb"]] <- PercentageFeatureSet(seurat_objects[[dir]], pattern = rb_pattern)
+  
+  # Rename cells
+  seurat_objects[[dir]] <- RenameCells(seurat_objects[[dir]], new.names = paste0(dir, "_", Cells(seurat_objects[[dir]])))
+  
+  end_time_sample <- Sys.time()
+  elapsed_time_sample <- end_time_sample - start_time_sample
+  message("⏳ Sample ", dir, " loading completed in: ", format(elapsed_time_sample))
+}
+
+# ------------------------------------------------
+# Display count summary in tabular format
+# ------------------------------------------------
+message("\n📊 **SAMPLE SUMMARY**\n")
+print(count_summary)
+write.csv(count_summary, file = file.path(data_dir, "cell_gene_counts_summary.csv"), row.names = FALSE)
+message("📁 Saved cell & gene count summary: ", file.path(data_dir, "cell_gene_counts_summary.csv"))
+
+# 🚀 STOP EXECUTION HERE TO REVIEW CELL COUNTS 🚀
+stop("✅ Cell counts have been displayed. Review the output before proceeding.")
